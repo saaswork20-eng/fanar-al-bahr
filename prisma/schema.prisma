@@ -1,0 +1,455 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum Role {
+  BUYER
+  ADMIN
+}
+
+enum DeliveryType {
+  INSTANT_KEY
+  ACCOUNT_SERVICE
+  GIFT_LINK
+  PHYSICAL_SHIPPING
+}
+
+enum KeyStatus {
+  AVAILABLE
+  RESERVED
+  SOLD
+  REVOKED
+}
+
+enum OrderStatus {
+  PENDING_PAYMENT
+  CONFIRMED
+  PROCESSING
+  SHIPPED
+  DELIVERED
+  CANCELLED
+  REFUNDED
+}
+
+enum DisputeStatus {
+  OPEN
+  UNDER_REVIEW
+  RESOLVED_REFUNDED
+  RESOLVED_REJECTED
+}
+
+enum AccountStatus {
+  ACTIVE
+  SUSPENDED
+  BANNED
+  PENDING_VERIFICATION
+}
+
+enum ProductStatus {
+  DRAFT
+  PUBLISHED
+  UNPUBLISHED
+  OUT_OF_STOCK
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  FAILED
+  REFUNDED
+}
+
+// --------------------------------------------------------
+// USER & IDENTITY (ADMIN + BUYER ONLY)
+// --------------------------------------------------------
+model User {
+  id                 String                  @id @default(cuid())
+  email              String                  @unique
+  passwordHash       String?
+  name               String?
+  avatarUrl          String?
+  firstName          String?
+  lastName           String?
+  phone              String?
+  role               Role                    @default(BUYER)
+  status             AccountStatus           @default(ACTIVE)
+  emailVerified      DateTime?
+  createdAt          DateTime                @default(now())
+  updatedAt          DateTime                @updatedAt
+
+  cart               Cart?
+  orders             Order[]                 @relation("BuyerOrders")
+  disputes           Dispute[]               @relation("BuyerDisputes")
+  addresses          Address[]
+  wishlistItems      WishlistItem[]
+  reviews            Review[]
+  notifications      Notification[]
+  resetTokens        PasswordResetToken[]
+  verificationTokens EmailVerificationToken[]
+}
+
+model PasswordResetToken {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  token     String   @unique
+  expiresAt DateTime
+  used      Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([token])
+  @@index([userId])
+}
+
+model EmailVerificationToken {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  token     String   @unique
+  expiresAt DateTime
+  used      Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([token])
+  @@index([userId])
+}
+
+// --------------------------------------------------------
+// ADMIN AUDIT LOG
+// --------------------------------------------------------
+model AuditLog {
+  id         String   @id @default(cuid())
+  adminId    String
+  adminEmail String
+  action     String   // PRODUCT_CREATED, PRODUCT_UPDATED, PRODUCT_DELETED, USER_SUSPENDED, ORDER_UPDATED
+  targetType String   // PRODUCT, ORDER, USER, CATEGORY
+  targetId   String
+  targetName String?
+  details    String?  @db.Text
+  createdAt  DateTime @default(now())
+
+  @@index([adminId])
+  @@index([targetId])
+  @@index([action])
+}
+
+// --------------------------------------------------------
+// SINGLE-VENDOR PRODUCT CATALOG (FANAR AL BHAR)
+// --------------------------------------------------------
+model Category {
+  id          String    @id @default(cuid())
+  name        String    @unique
+  slug        String    @unique
+  description String?
+  imageUrl    String?
+  isActive    Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @default(now()) @updatedAt
+  products    Product[]
+}
+
+model StoreSetting {
+  id        String   @id @default(cuid())
+  key       String   @unique
+  value     String   @db.Text
+  updatedAt DateTime @updatedAt
+}
+
+
+model Platform {
+  id       String    @id @default(cuid())
+  name     String    @unique // Steam, Xbox, PlayStation, Epic Games, EA App, PC
+  slug     String    @unique
+  iconUrl  String?
+  products Product[]
+}
+
+model Product {
+  id                String         @id @default(cuid())
+  title             String
+  slug              String         @unique
+  description       String         @db.Text
+  shortDescription  String?        @db.Text
+  coverImageUrl     String
+  bannerImageUrl    String?
+  images            String[]       @default([])
+  categoryId        String
+  category          Category       @relation(fields: [categoryId], references: [id])
+  platformId        String?
+  platform          Platform?      @relation(fields: [platformId], references: [id])
+  region            String         @default("GLOBAL") // GLOBAL, EUROPE, NORTH_AMERICA, ASIA, INDIA
+  price             Decimal        @db.Decimal(10, 2)
+  discountPrice     Decimal?       @db.Decimal(10, 2)
+  discountStartDate DateTime?
+  discountEndDate   DateTime?
+  stockQuantity     Int            @default(0)
+  lowStockThreshold Int            @default(5)
+  sku               String?        @unique
+  deliveryType      DeliveryType   @default(INSTANT_KEY)
+  status            ProductStatus  @default(PUBLISHED)
+  isActive          Boolean        @default(true)
+  isFeatured        Boolean        @default(false)
+  brand             String?
+  developer         String?
+  publisher         String?
+  releaseDate       DateTime?
+  specifications    String?        @db.Text
+  weight            String?
+  dimensions        String?
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+
+  keys              ProductKey[]
+  orderItems        OrderItem[]
+  cartItems         CartItem[]
+  wishlistItems     WishlistItem[]
+  reviews           Review[]
+
+  @@index([slug])
+  @@index([categoryId])
+  @@index([platformId])
+  @@index([status])
+  @@index([isActive, price])
+}
+
+// --------------------------------------------------------
+// SHOPPING CART (BUYER PERSISTENT CART)
+// --------------------------------------------------------
+model Cart {
+  id        String     @id @default(cuid())
+  userId    String     @unique
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  items     CartItem[]
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  @@index([userId])
+}
+
+model CartItem {
+  id        String   @id @default(cuid())
+  cartId    String
+  cart      Cart     @relation(fields: [cartId], references: [id], onDelete: Cascade)
+  productId String
+  product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  quantity  Int      @default(1)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([cartId, productId])
+  @@index([cartId])
+  @@index([productId])
+}
+
+// --------------------------------------------------------
+// ENCRYPTED DIGITAL KEY VAULT (FANAR AL BHAR INVENTORY)
+// --------------------------------------------------------
+model ProductKey {
+  id          String       @id @default(cuid())
+  productId   String
+  product     Product      @relation(fields: [productId], references: [id], onDelete: Cascade)
+  cipherText  String       @db.Text // AES-256-GCM encrypted key
+  iv          String       // Initialization Vector
+  tag         String       // Authentication Tag
+  status      KeyStatus    @default(AVAILABLE)
+  orderItemId String?      @unique
+  orderItem   OrderItem?   @relation(fields: [orderItemId], references: [id])
+  isRevealed  Boolean      @default(false)
+  revealedAt  DateTime?
+  revealedIp  String?
+  createdAt   DateTime     @default(now())
+
+  @@index([productId, status])
+}
+
+// --------------------------------------------------------
+// SINGLE-VENDOR ORDERS (BUYER + FANAR AL BHAR)
+// --------------------------------------------------------
+model Order {
+  id              String        @id @default(cuid())
+  orderNumber     String        @unique
+  buyerId         String
+  buyer           User          @relation("BuyerOrders", fields: [buyerId], references: [id])
+  subtotal        Decimal       @default(0) @db.Decimal(12, 2)
+  discount        Decimal       @default(0) @db.Decimal(12, 2)
+  tax             Decimal       @default(0) @db.Decimal(12, 2)
+  shipping        Decimal       @default(0) @db.Decimal(12, 2)
+  totalAmount     Decimal       @db.Decimal(12, 2)
+  currency        String        @default("INR")
+  status          OrderStatus   @default(PENDING_PAYMENT)
+  paymentStatus   PaymentStatus @default(PENDING)
+  paymentMethod   String?
+  paymentId       String?       @unique
+  shippingAddress String?       @db.Text
+  shippingMethod  String?
+  trackingNumber  String?
+  couponCode      String?
+  notes           String?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  items           OrderItem[]
+
+  @@index([buyerId])
+  @@index([status])
+  @@index([paymentStatus])
+}
+
+model OrderItem {
+  id              String      @id @default(cuid())
+  orderId         String
+  order           Order       @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productId       String
+  product         Product     @relation(fields: [productId], references: [id])
+  productTitle    String?
+  sku             String?
+  quantity        Int         @default(1)
+  priceAtPurchase Decimal     @db.Decimal(10, 2)
+  subtotal        Decimal?    @db.Decimal(12, 2)
+
+  deliveredKey    ProductKey?
+  dispute         Dispute?
+
+  @@index([orderId])
+  @@index([productId])
+}
+
+model Dispute {
+  id          String        @id @default(cuid())
+  orderItemId String        @unique
+  orderItem   OrderItem     @relation(fields: [orderItemId], references: [id])
+  buyerId     String
+  buyer       User          @relation("BuyerDisputes", fields: [buyerId], references: [id])
+  reason      String
+  status      DisputeStatus @default(OPEN)
+  evidenceUrl String?
+  adminNotes  String?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+}
+
+// --------------------------------------------------------
+// CUSTOMER ADDRESSES
+// --------------------------------------------------------
+model Address {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  fullName    String
+  phone       String
+  addressLine String
+  city        String
+  state       String
+  postalCode  String
+  country     String   @default("India")
+  isDefault   Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([userId])
+}
+
+// --------------------------------------------------------
+// WISHLIST (BUYER PERSISTENT WISHLIST)
+// --------------------------------------------------------
+model WishlistItem {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  productId String
+  product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@unique([userId, productId])
+  @@index([userId])
+  @@index([productId])
+}
+
+// --------------------------------------------------------
+// PRODUCT REVIEWS & RATINGS (VERIFIED BUYERS)
+// --------------------------------------------------------
+model Review {
+  id                 String   @id @default(cuid())
+  productId          String
+  product            Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  buyerId            String
+  buyer              User     @relation(fields: [buyerId], references: [id], onDelete: Cascade)
+  orderId            String?
+  rating             Int      @default(5)
+  comment            String   @db.Text
+  isVerifiedPurchase Boolean  @default(true)
+  isApproved         Boolean  @default(true)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@unique([buyerId, productId])
+  @@index([productId])
+  @@index([buyerId])
+  @@index([isApproved])
+}
+
+// --------------------------------------------------------
+// COUPONS & DISCOUNTS
+// --------------------------------------------------------
+enum DiscountType {
+  PERCENTAGE
+  FIXED
+}
+
+model Coupon {
+  id               String        @id @default(cuid())
+  code             String        @unique
+  discountType     DiscountType  @default(PERCENTAGE)
+  discountValue    Decimal       @db.Decimal(10, 2)
+  minOrderAmount   Decimal?      @db.Decimal(10, 2)
+  maxDiscount      Decimal?      @db.Decimal(10, 2)
+  startDate        DateTime?
+  expiryDate       DateTime?
+  usageLimit       Int?
+  usageCount       Int           @default(0)
+  perCustomerLimit Int?          @default(1)
+  isActive         Boolean       @default(true)
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  usages           CouponUsage[]
+
+  @@index([code])
+  @@index([isActive])
+}
+
+model CouponUsage {
+  id       String   @id @default(cuid())
+  couponId String
+  coupon   Coupon   @relation(fields: [couponId], references: [id], onDelete: Cascade)
+  userId   String
+  orderId  String?
+  usedAt   DateTime @default(now())
+
+  @@index([couponId])
+  @@index([userId])
+}
+
+// --------------------------------------------------------
+// IN-APP NOTIFICATIONS
+// --------------------------------------------------------
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title     String
+  message   String   @db.Text
+  type      String   // ORDER_CONFIRMED, PAYMENT_COMPLETED, ORDER_SHIPPED, ORDER_DELIVERED, ORDER_CANCELLED, REFUND_PROCESSED, SYSTEM
+  link      String?
+  isRead    Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([isRead])
+}
+
